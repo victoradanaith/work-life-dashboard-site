@@ -26,7 +26,7 @@ export function totals(tasks){const done=tasks.filter(task=>task.status==='Done'
 export function projectProgress(tasks){const grouped=new Map();for(const task of tasks){const key=task.project||'No project';if(!grouped.has(key))grouped.set(key,[]);grouped.get(key).push(task);}return [...grouped].map(([name,records])=>({name,...totals(records)}));}
 export function upcomingDeadlines(tasks){return tasks.filter(task=>task.due&&task.status!=='Done').sort((a,b)=>a.due.localeCompare(b.due));}
 
-export const FEED_PAGE_SIZE=8,IDEAS_LIMIT=100,IDEAS_KEY='worklife.ideas.v1';
+export const FEED_WINDOW_LIMIT=24,IDEAS_LIMIT=100,IDEAS_KEY='worklife.ideas.v1';
 export function projectTone(name=''){
  let hash=0;for(const character of name)hash=(hash*31+character.charCodeAt(0))>>>0;return hash%6;
 }
@@ -61,9 +61,35 @@ export function buildFeed(tasks,logs,now=new Date()){
 export function filterFeed(records,{area='',project='',status='',attention=false}={}){
  return records.filter(record=>(!area||record.area===area)&&(!project||record.project===project)&&(!status||record.status===status)&&(!attention||record.attention));
 }
-export function feedPage(records,start=0,cycle=1){
- const offset=Math.max(0,Math.min(Math.floor(Number(start)||0),Math.max(0,records.length-1)));
- return {items:records.slice(offset,offset+FEED_PAGE_SIZE),start:offset,end:Math.min(offset+FEED_PAGE_SIZE,records.length),total:records.length,cycle:Math.max(1,Number(cycle)||1),previous:offset>0,next:offset+FEED_PAGE_SIZE<records.length};
+/** Periodic variable-height window. Memory is O(source records), independent of cycles. */
+export function createFeedWindow(count,{estimate=520,limit=FEED_WINDOW_LIMIT,rebaseAt=120000}={}){
+ count=Math.max(0,Math.floor(count));limit=Math.max(12,Math.min(FEED_WINDOW_LIMIT,limit));
+ const heights=Array(count).fill(estimate);let prefix=[0],origin=0;
+ function rebuild(){prefix=[0];for(const height of heights)prefix.push(prefix.at(-1)+height);}
+ rebuild();
+ function offset(index){return count?Math.floor(index/count)*prefix[count]+prefix[index%count]:0;}
+ function indexAt(position){if(!count)return 0;position=Math.max(0,position);const cycle=Math.floor(position/prefix[count]),within=position-cycle*prefix[count];let low=0,high=count;while(low<high){const mid=Math.floor((low+high+1)/2);if(prefix[mid]<=within)low=mid;else high=mid-1;}return cycle*count+Math.min(count-1,low);}
+ return {
+  offset,indexAt,get origin(){return origin;},get retainedHeights(){return heights.length;},
+  measure(entries,anchor){const before=offset(anchor)-offset(origin);let changed=false;for(const [index,height] of entries){if(count&&Number.isFinite(height)&&height>=80&&Math.abs(heights[index%count]-height)>1){heights[index%count]=height;changed=true;}}if(changed)rebuild();return {changed,correction:offset(anchor)-offset(origin)-before};},
+  plan(scroll=0,viewport=844){
+   if(!count)return {start:0,end:0,first:0,cycle:1,top:0,bottom:0,delta:0,slots:[]};
+   const logical=offset(origin)+Math.max(0,scroll),first=indexAt(logical),last=indexAt(logical+Math.max(0,viewport));let delta=0;
+   if(scroll>rebaseAt){const next=Math.max(0,first-8);delta=offset(origin)-offset(next);origin=next;}
+   else if(origin>0&&scroll<2000){const next=Math.max(0,origin-16);delta=offset(origin)-offset(next);origin=next;}
+   const start=Math.max(origin,first-4),end=Math.min(start+limit,Math.max(first+12,last+5)),tail=end+8;
+   return {start,end,first,cycle:Math.floor(first/count)+1,top:offset(start)-offset(origin),bottom:offset(tail)-offset(end),delta,slots:Array.from({length:end-start},(_,i)=>({index:start+i,source:(start+i)%count,cycle:Math.floor((start+i)/count)+1}))};
+  }
+ };
+}
+/** Read-only Sheet references are deliberately separate from the local Ideas serializer. */
+export function parseSharedIdeas(data){
+ const ranges=data?.valueRanges;if(!Array.isArray(ranges)||ranges.length!==2)throw Error('Unexpected OM reference response.');
+ const rows=ranges.map(range=>range.values||[]);if(rows.some(items=>!Array.isArray(items)||items.length>1000||!items.every(Array.isArray)))throw Error('Unexpected OM reference response.');
+ const image=value=>{const direct=safeLink(value);if(direct)return direct;const match=/^=IMAGE\(\s*"((?:[^"]|"")*)"(?:\s*[,;)])/i.exec(text(value));return match?safeLink(match[1].replaceAll('""','"')):'';};
+ const pins=rows[0].slice(2).flatMap((row,index)=>{const url=safeLink(row[2]);return url?[{id:'shared-pinterest-'+(index+3),title:text(row[1])||'Pinterest reference',url,source:ideaSource(url),area:'OM',project:'OM · Pinterest Halloween',imageUrl:image(row[6]),notes:text(row[7]),originalUrl:safeLink(row[3]),mediaType:text(row[4]),shared:true}]:[];});
+ const social=rows[1].slice(1).flatMap((row,index)=>{const url=safeLink(row[0]);return url?[{id:'shared-social-'+(index+2),title:ideaSource(url)+' reference',url,source:ideaSource(url),area:'OM',project:'OM · Research',imageUrl:image(row[1]),notes:text(row[2]),originalUrl:'',mediaType:'',shared:true}]:[];});
+ return [...pins,...social];
 }
 export function ideaSource(value){
  const hostname=new URL(value).hostname.toLowerCase();
