@@ -13,11 +13,11 @@ async function loadDashboardConfig(){return {configured:Boolean(PUBLIC_CONFIG.cl
 async function readDashboardData(token,signal){return readPrivateSheet({spreadsheetId:PUBLIC_CONFIG.spreadsheetId,accessToken:token,signal});}
 
 let snapshot={tasks:[],logs:[]},category='',generation=0,expiry,pendingRequest;
-let activeView='main',feedRecords=[],feedWindow=null,feedSelection=[],feedSavedScroll=0,feedInitialized=false,attentionOnly=false,sharedIdeas=[],sharedIdeasNotice='',ideas=[],ideasStore=null,ideasNotice='',removedIdeas=[];
+let activeView='main',feedRecords=[],feedWindow=null,feedSelection=[],feedSavedScroll=0,feedSavedAnchor=null,feedRestoreAnchor=null,feedInitialized=false,attentionOnly=false,sharedIdeas=[],sharedIdeasNotice='',ideas=[],ideasStore=null,ideasNotice='',removedIdeas=[];
 const previewIDs=new Set(),failedPreviewIDs=new Set(),feedNodes=new Map(),expandedActivity=new Set();let feedFrame=0,feedObserver=null;
 const feedLayout=Boolean(window.requestAnimationFrame&&document.createElement('article').getBoundingClientRect);
 function clear(message='Signed out. Sign in to continue.'){
- stopFeed();feedWindow=null;feedNodes.clear();expandedActivity.clear();feedInitialized=false;feedSavedScroll=0;generation++;clearTimeout(expiry);pendingRequest?.abort();pendingRequest=null;snapshot={tasks:[],logs:[]};category='';
+ stopFeed();feedWindow=null;feedNodes.clear();expandedActivity.clear();feedInitialized=false;feedSavedScroll=0;feedSavedAnchor=null;feedRestoreAnchor=null;generation++;clearTimeout(expiry);pendingRequest?.abort();pendingRequest=null;snapshot={tasks:[],logs:[]};category='';
  for(const id of ['cards','areas','metrics','deadlines','projects','activity-list','feed-cards','feed-attention-list','ideas-grid','idea-project-options'])$('#'+id).replaceChildren();
  for(const id of ['freshness','count','log-count','feed-freshness','feed-position','feed-cycle-note','ideas-message','ideas-count','ideas-shared-status'])$('#'+id).textContent='';
  feedRecords=[];feedSelection=[];attentionOnly=false;sharedIdeas=[];sharedIdeasNotice='';ideas=[];ideasStore=null;removedIdeas=[];$('#ideas-undo').hidden=true;previewIDs.clear();failedPreviewIDs.clear();activeView='main';
@@ -31,12 +31,12 @@ function setOptions(id,values,label){
  const selected=$('#'+id).value;$('#'+id).innerHTML=`<option value="">${label}</option>`+values.map(value=>`<option value="${esc(value)}">${esc(value)}</option>`).join('');$('#'+id).value=values.includes(selected)?selected:'';
 }
 function showView(name,focus=false){
- if(activeView==='feed'){feedSavedScroll=window.scrollY||0;stopFeed();}
+ if(activeView==='feed'){feedSavedScroll=window.scrollY||0;if(feedLayout){const visible=[...feedNodes].find(([,node])=>node.getBoundingClientRect().bottom>70);feedSavedAnchor=visible?{index:visible[0],top:visible[1].getBoundingClientRect().top}:null;}stopFeed();}
  activeView=['main','feed','ideas'].includes(name)?name:'main';
  for(const view of ['main','feed','ideas']){$('#'+view+'-view').hidden=view!==activeView;$('#nav-'+view).setAttribute?.('aria-current',view===activeView?'page':'false');}
  if(activeView==='feed'){if(!feedInitialized)renderFeed();else scheduleFeed();}if(activeView==='ideas')renderIdeas();
  document.title='Work & Life · '+({main:'Main',feed:'Feed',ideas:'Ideas'})[activeView];
- if(focus){window.history?.replaceState?.(null,'','#'+activeView);const heading=$(activeView==='main'?'#heading':'#'+activeView+'-title');heading.setAttribute?.('tabindex','-1');heading.focus?.({preventScroll:true});window.scrollTo?.({top:activeView==='feed'?feedSavedScroll:0,behavior:'auto'});if(activeView==='feed')scheduleFeed();}
+ if(focus){window.history?.replaceState?.(null,'','#'+activeView);const heading=$(activeView==='main'?'#heading':'#'+activeView+'-title');heading.setAttribute?.('tabindex','-1');heading.focus?.({preventScroll:true});window.scrollTo?.({top:activeView==='feed'?feedSavedScroll:0,behavior:'auto'});if(activeView==='feed'){feedRestoreAnchor=feedSavedAnchor;scheduleFeed();}}
 }
 function prepareViews(){
  feedRecords=buildFeed(snapshot.tasks,snapshot.logs);attentionOnly=false;feedInitialized=false;
@@ -66,6 +66,7 @@ function updateFeedWindow(){
  $('#feed-bottom').style.height=(feedWindow.offset(plan.end+8)-feedWindow.offset(plan.end))+'px';
  const correction=before!==undefined&&anchor?.isConnected?anchor.getBoundingClientRect().top-before:plan.delta+measured.correction;
  if(Math.abs(correction)>.5)window.scrollBy({top:correction,behavior:'instant'});
+ if(feedRestoreAnchor){const restored=feedNodes.get(feedRestoreAnchor.index);if(restored){const shift=restored.getBoundingClientRect().top-feedRestoreAnchor.top;if(Math.abs(shift)>.5)window.scrollBy({top:shift,behavior:'instant'});}feedRestoreAnchor=null;}
  $('#feed-position').textContent=`${feedSelection.length} loaded records · Review cycle ${plan.cycle}`;
  host.setAttribute('aria-busy','false');
 }
@@ -130,7 +131,7 @@ async function connect(){
 }
 $('#logout').onclick=()=>clear();$('#overview').onclick=()=>{category='';render();};$('#project').onchange=render;$('#status').onchange=render;$('#areas').onclick=event=>{const button=event.target.closest('[data-area]');if(button){category=button.dataset.area;render();}};
 for(const name of ['main','feed','ideas'])$('#nav-'+name).onclick=()=>showView(name,true);
-function resetFeed(){feedSavedScroll=0;renderFeed();}
+function resetFeed(){feedSavedScroll=0;feedSavedAnchor=null;feedRestoreAnchor=null;renderFeed();}
 for(const id of ['feed-area','feed-project','feed-status'])$('#'+id).onchange=resetFeed;
 $('#feed-attention-toggle').onclick=()=>{attentionOnly=!attentionOnly;resetFeed();};
 $('#feed-attention-list').onclick=event=>{const button=event.target.closest('[data-review-key]');if(!button)return;attentionOnly=false;resetFeed();const index=feedSelection.findIndex(item=>item.key===button.dataset.reviewKey);if(index<0||!feedLayout)return;const host=$('#feed-cards');window.scrollTo({top:window.scrollY+host.getBoundingClientRect().top+feedWindow.offset(index),behavior:'instant'});scheduleFeed();};
