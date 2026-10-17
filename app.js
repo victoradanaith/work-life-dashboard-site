@@ -30,9 +30,10 @@ function clear(message='Signed out. Sign in to continue.'){
 function setOptions(id,values,label){
  const selected=$('#'+id).value;$('#'+id).innerHTML=`<option value="">${label}</option>`+values.map(value=>`<option value="${esc(value)}">${esc(value)}</option>`).join('');$('#'+id).value=values.includes(selected)?selected:'';
 }
+function routeView(){const requested=window.location?.hash?.slice(1);return ['main','feed','ideas'].includes(requested)?requested:'feed';}
 function showView(name,focus=false){
  if(activeView==='feed'){feedSavedScroll=window.scrollY||0;if(feedLayout){const visible=[...feedNodes].find(([,node])=>node.getBoundingClientRect().bottom>70);feedSavedAnchor=visible?{index:visible[0],top:visible[1].getBoundingClientRect().top}:null;}stopFeed();}
- activeView=['main','feed','ideas'].includes(name)?name:'main';
+ activeView=['main','feed','ideas'].includes(name)?name:'feed';
  for(const view of ['main','feed','ideas']){$('#'+view+'-view').hidden=view!==activeView;$('#nav-'+view).setAttribute?.('aria-current',view===activeView?'page':'false');}
  if(activeView==='feed'){if(!feedInitialized)renderFeed();else scheduleFeed();}if(activeView==='ideas')renderIdeas();
  document.title='Work & Life · '+({main:'Main',feed:'Feed',ideas:'Ideas'})[activeView];
@@ -45,7 +46,7 @@ function prepareViews(){
  setOptions('feed-status',[...new Set(feedRecords.map(item=>item.status))].sort(),'All statuses');
  ideas=[];ideasNotice='';try{ideasStore=createIdeaStore(window.localStorage);ideas=ideasStore.load();}catch{ideasStore=null;ideasNotice='Device storage is unavailable or could not be read. Additions will last only for this visit; existing saved data has not been replaced.';}
  $('#idea-save').textContent=ideasStore?'Save on this device':'Add for this visit';$('#ideas-message').textContent=ideasNotice;
- showView(window.location?.hash?.slice(1)||'main');
+ showView(routeView());
 }
 function feedFilters(){return {area:$('#feed-area').value,project:$('#feed-project').value,status:$('#feed-status').value,attention:attentionOnly};}
 function feedCard(item,index,cycle){return `<article class="feed-card tone-${item.tone}" id="feed-record-${index}" tabindex="-1" aria-posinset="${index+1}" aria-setsize="-1"><small class="review-cycle">Review cycle ${cycle}${cycle>1?' · Same loaded records':''}</small><div class="feed-card-top"><span class="project-badge">${esc(item.project||'No project')}</span><span class="tag">${esc(item.area)}</span><span class="tag">${esc(item.status)}</span></div>${item.attention?`<p class="attention-label">${esc(item.attention)}</p>`:''}<h2>${esc(item.title)}</h2><p class="note">${item.update?`Latest source update · ${esc(item.update)} Bangkok`:'Update time not set in the source'}</p>${item.result?`<p class="feed-result">${esc(item.result)}</p>`:''}<div class="next-action"><strong>Next action</strong><p>${esc(item.nextAction||'Not set in the source Sheet.')}</p></div><div class="links">${[['workingFile','Working file'],['presentingFile','Presentation']].map(([key,label])=>item[key]?`<a href="${esc(item[key])}" target="_blank" rel="noopener noreferrer">${label} ↗</a>`:'').join('')}</div>${item.activity.length?`<details class="feed-activity"><summary>Activity · ${item.activity.length} entr${item.activity.length===1?'y':'ies'}</summary>${item.activity.slice(0,3).map(log=>`<div><small>${esc(log.date)}${log.status?' · '+esc(log.status):''}</small><p>${esc(log.description)}</p>${log.link?`<a href="${esc(log.link)}" target="_blank" rel="noopener noreferrer">Result link ↗</a>`:''}</div>`).join('')}${item.activity.length>3?'<p class="note">Latest 3 entries shown. Full activity is available on Main.</p>':''}</details>`:'<p class="note">No activity entries recorded.</p>'}<small>${esc(item.id)}</small></article>`;}
@@ -144,4 +145,4 @@ $('#ideas-undo').onclick=()=>{if(!removedIdeas.length)return;try{if(persistIdeas
 $('#ideas-grid').addEventListener?.('error',event=>{if(event.target.tagName!=='IMG')return;event.target.hidden=true;if(event.target.dataset?.ideaImage)failedPreviewIDs.add(event.target.dataset.ideaImage);const fallback=event.target.closest('.idea-visual')?.querySelector('.image-fallback');if(fallback)fallback.hidden=false;},true);
 $('#ideas-export').onclick=()=>{if(!ideas.length)return;const url=URL.createObjectURL(new Blob([serializeIdeas(ideas)],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download='work-life-ideas-'+new Date().toISOString().slice(0,10)+'.json';link.click();URL.revokeObjectURL(url);$('#ideas-message').textContent='Ideas exported. This unencrypted file contains your saved reference URLs and notes; keep it private.';};
 window.addEventListener('pagehide',()=>clear());clear('Checking sign-in setup…');connect();
-window.addEventListener('hashchange',()=>{if(!$('#workspace').hidden)showView(window.location?.hash?.slice(1)||'main');});
+window.addEventListener('hashchange',()=>{if(!$('#workspace').hidden)showView(routeView());});
