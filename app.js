@@ -1,4 +1,4 @@
-import {AUTH_SESSION_KEY,issueTabSession,validateTabSession,createTabSessionStore,AREAS,parseSnapshot,selectTasks,totals,projectProgress,upcomingDeadlines,createFeedWindow,parseSharedIdeas,buildFeed,filterFeed,projectTone,addIdea,createIdeaStore,serializeIdeas} from './secure-model.js?v=9a223c820c25';
+import {AUTH_SESSION_KEY,issueTabSession,validateTabSession,createTabSessionStore,AREAS,parseSnapshot,selectTasks,totals,projectProgress,upcomingDeadlines,createFeedWindow,parseSharedIdeas,buildFeed,filterFeed,projectTone,addIdea,createIdeaStore,serializeIdeas} from './secure-model.js?v=e8468b6b913a';
 import {readOMResearch} from './browser-sheets.js?v=d9c3fdae4012';
 const $=selector=>document.querySelector(selector),esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const descriptions=['Property management','Social media work','One to Two Coffee','Life beyond work'];
@@ -13,7 +13,7 @@ async function loadDashboardConfig(){return {configured:Boolean(PUBLIC_CONFIG.cl
 async function readDashboardData(token,signal){return readPrivateSheet({spreadsheetId:PUBLIC_CONFIG.spreadsheetId,accessToken:token,signal});}
 
 let snapshot={tasks:[],logs:[]},category='',generation=0,expiry,pendingRequest;
-let authConfig=null,tabStore=null,activeSession=null,logoutChannel=null,pageSuspended=false,signInReady=false,authorizationGeneration=null;
+let authConfig=null,tabStore=null,activeSession=null,logoutChannel=null,pageSuspended=false,signInReady=false,authorizationGeneration=null,connectionVersion=0;
 let activeView='main',feedRecords=[],feedWindow=null,feedSelection=[],feedSavedScroll=0,feedSavedAnchor=null,feedRestoreAnchor=null,feedInitialized=false,attentionOnly=false,sharedIdeas=[],sharedIdeasNotice='',ideas=[],ideasStore=null,ideasNotice='',removedIdeas=[];
 const previewIDs=new Set(),failedPreviewIDs=new Set(),feedNodes=new Map(),expandedActivity=new Set();let feedFrame=0,feedObserver=null;
 const feedLayout=Boolean(window.requestAnimationFrame&&document.createElement('article').getBoundingClientRect);
@@ -110,11 +110,18 @@ function render(){
  const taskIDs=new Set(scoped.map(task=>task.id)),logs=snapshot.logs.filter(log=>!category||taskIDs.has(log.taskID));$('#log-count').textContent=`${logs.length} entries · Bangkok source dates`;
  $('#activity-list').innerHTML=logs.slice().reverse().map(log=>`<article class="activity-entry"><small>${esc(log.date)} · ${esc(log.taskID)}${log.status?` · ${esc(log.status)}`:''}</small><p>${esc(log.description)}</p>${log.hours?`<p>Hours · ${esc(log.hours)}</p>`:''}${log.link?`<a href="${esc(log.link)}" target="_blank" rel="noopener noreferrer">Result link ↗</a>`:''}</article>`).join('')||'<p class="empty">No activity entries in this area.</p>';
 }
+function showAccessState(state){
+ const labels={checking:'Checking tab access',verifying:'Verifying access',restoring:'Restoring saved access',saved:'Access saved in this tab',restored:'Access restored in this tab',missing:'No saved access in this tab',expired:'Saved access expired',invalid:'Invalid saved access removed',unavailable:'Tab storage unavailable · This visit only',denied:'Google denied private access',retry:'Saved access · Network retry needed','signed-out':'Signed out'};
+ $('#access-diagnostic').textContent='Build 20261017.2 · '+(labels[state]||labels.checking);
+}
+function openTabStore(){
+ try{return createTabSessionStore(window.sessionStorage,authConfig.clientId,()=>Date.now());}catch{return null;}
+}
 function forgetTabAccess(){
  try{if(tabStore)tabStore.clear();else window.sessionStorage?.removeItem(AUTH_SESSION_KEY);return true;}catch{return false;}
 }
-function endSession(message='Signed out. Continue with Google to sign in.',{broadcast=false,issuedAt=null}={}){
- authorizationGeneration=null;const removed=forgetTabAccess();clearView(message+(removed?'':' This browser blocked clearing tab storage; close this tab or clear site data.'));
+function endSession(message='Signed out. Continue with Google to sign in.',{broadcast=false,issuedAt=null,state='signed-out'}={}){
+ showAccessState(state);authorizationGeneration=null;const removed=forgetTabAccess();clearView(message+(removed?'':' This browser blocked clearing tab storage; close this tab or clear site data.'));
  if(broadcast)try{logoutChannel?.postMessage({type:'logout',clientId:authConfig?.clientId,issuedAt});}catch{}
 }
 function setupLogoutChannel(){
@@ -128,61 +135,70 @@ function setupLogoutChannel(){
 }
 function armTabDeadline(record,remembered){
  activeSession={issuedAt:record.issuedAt,expiresAt:record.expiresAt,remembered};
- const remaining=record.expiresAt-Date.now();if(remaining<=0){endSession('Session expired. Continue with Google to sign in.');return false;}
- expiry=setTimeout(()=>endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:record.issuedAt}),remaining);return true;
+ const remaining=record.expiresAt-Date.now();if(remaining<=0){endSession('Session expired. Continue with Google to sign in.',{state:'expired'});return false;}
+ expiry=setTimeout(()=>endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:record.issuedAt,state:'expired'}),remaining);return true;
 }
 function showTabDeadline(){
  if(!activeSession)return;const until=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Bangkok',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(activeSession.expiresAt));
  $('#session-state').textContent='Access until '+until+' Bangkok · '+(activeSession.remembered?'Refresh stays signed in in this tab.':'Tab storage is unavailable; refreshing will require sign-in.');$('#session-state').setAttribute?.('data-expires-at',String(activeSession.expiresAt));
 }
 async function loadTabSession(record,{save=false}={}){
- clearView(save?'Verifying private access…':'Restoring private access in this tab…');const requestGeneration=generation;
- if(!validateTabSession(record,authConfig.clientId,Date.now())){record.accessToken='';endSession('Session expired or unavailable. Continue with Google to sign in.');return;}
- let remembered=!save;if(!armTabDeadline(record,remembered)){record.accessToken='';return;}pendingRequest=new AbortController();$('#logout').hidden=false;
+ clearView(save?'Verifying private access…':'Restoring private access in this tab…');showAccessState(save?'verifying':'restoring');const requestGeneration=generation;
+ if(!validateTabSession(record,authConfig.clientId,Date.now())){record.accessToken='';endSession('Session expired or unavailable. Continue with Google to sign in.',{state:'invalid'});return;}
+ let remembered=!save;if(!armTabDeadline(record,remembered)){record.accessToken='';return;}const request=new AbortController();pendingRequest=request;$('#logout').hidden=false;
+ let centralReady=false,researchFinished=false,researchResult=null;
+ const applyResearch=result=>{sharedIdeas=result.items||[];sharedIdeasNotice=result.error||`${sharedIdeas.length} references read from private OM research · Read only · Refresh to check for updates.`;};
+ // Optional research must never delay central authorization, tab saving or the main view.
+ readOMResearch({accessToken:record.accessToken,signal:request.signal}).then(parseSharedIdeas).then(items=>({items}),()=>({error:'OM research could not be loaded. Ask the Sheet owner for access if needed, or refresh to retry.'})).then(result=>{
+  researchFinished=true;researchResult=result;if(!centralReady)return;
+  if(pendingRequest===request)pendingRequest=null;
+  if(requestGeneration!==generation)return;checkTabExpiry();if(requestGeneration!==generation||$('#workspace').hidden)return;
+  applyResearch(result);if(activeView==='ideas')renderIdeas();
+ });
  try{
-  const [data,research]=await Promise.all([readDashboardData(record.accessToken,pendingRequest.signal),readOMResearch({accessToken:record.accessToken,signal:pendingRequest.signal}).then(parseSharedIdeas).then(items=>({items}),()=>({error:'OM research could not be loaded. Ask the Sheet owner for access if needed, or refresh to retry.'}))]);
-  if(requestGeneration!==generation)return;if(!validateTabSession(record,authConfig.clientId,Date.now())){endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:record.issuedAt});return;}
-  snapshot=parseSnapshot(data);sharedIdeas=research.items||[];sharedIdeasNotice=research.error||`${sharedIdeas.length} references read from private OM research · Read only · Refresh to check for updates.`;
+  const data=await readDashboardData(record.accessToken,request.signal);
+  if(requestGeneration!==generation)return;if(!validateTabSession(record,authConfig.clientId,Date.now())){endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:record.issuedAt,state:'expired'});return;}
+  snapshot=parseSnapshot(data);if(researchResult)applyResearch(researchResult);else sharedIdeasNotice='Loading OM research… Main and Feed are ready.';
   // Save only after Google accepted the central read and its data was validated.
-  if(save){try{if(tabStore){tabStore.save(record);remembered=true;}}catch{forgetTabAccess();}}
+  if(save){try{tabStore=tabStore||openTabStore();if(tabStore){tabStore.save(record);remembered=true;}}catch{forgetTabAccess();}}
   if(activeSession)activeSession.remembered=remembered;
     $('#project').innerHTML='<option value="">All projects</option>'+[...new Set(snapshot.tasks.map(task=>task.project).filter(Boolean))].sort().map(project=>`<option>${esc(project)}</option>`).join('');
     $('#status').innerHTML='<option value="">All statuses</option>'+[...new Set(snapshot.tasks.map(task=>task.status))].sort().map(status=>`<option>${esc(status)}</option>`).join('');
     $('#freshness').textContent='Read from your private Sheet · '+new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Bangkok',dateStyle:'medium',timeStyle:'short'}).format(new Date(data.readAt))+' Bangkok';
-    $('#gate').hidden=true;$('#workspace').hidden=false;$('#logout').hidden=false;render();prepareViews();
-  showTabDeadline();
+    centralReady=true;$('#gate').hidden=true;$('#workspace').hidden=false;$('#logout').hidden=false;render();prepareViews();
+  showTabDeadline();showAccessState(remembered?(save?'saved':'restored'):'unavailable');
  }catch(error){
   if(requestGeneration!==generation)return;
-  if([401,403,404].includes(error.status)||error.message===DENIED_MESSAGE){endSession(error.message===DENIED_MESSAGE?DENIED_MESSAGE:'Google denied private access. Continue with an authorized account.',{broadcast:true,issuedAt:record.issuedAt});}
-  else if(record.expiresAt<=Date.now()){endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:record.issuedAt});}
-  else{clearView('Private Sheets could not be loaded. '+(remembered?'Retry loading with this tab’s saved access.':'Continue with Google to retry.'));if(remembered&&armTabDeadline(record,true)){$('#retry-session').hidden=false;$('#logout').hidden=false;}}
- }finally{record.accessToken='';if(requestGeneration===generation)pendingRequest=null;}
+  if([401,403,404].includes(error.status)||error.message===DENIED_MESSAGE){endSession(error.message===DENIED_MESSAGE?DENIED_MESSAGE:'Google denied private access. Continue with an authorized account.',{broadcast:true,issuedAt:record.issuedAt,state:'denied'});}
+  else if(record.expiresAt<=Date.now()){endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:record.issuedAt,state:'expired'});}
+  else{clearView('Private Sheets could not be loaded. '+(remembered?'Retry loading with this tab’s saved access.':'Continue with Google to retry.'));if(remembered&&armTabDeadline(record,true)){$('#retry-session').hidden=false;$('#logout').hidden=false;}showAccessState(remembered?'retry':'unavailable');}
+ }finally{record.accessToken='';if(!centralReady)request.abort();if((researchFinished||!centralReady)&&pendingRequest===request)pendingRequest=null;}
 }
 async function restoreTabSession(){
- let saved=null;try{saved=tabStore?.load();}catch{tabStore=null;}
- if(!saved)return false;await loadTabSession(saved);return true;
+ let saved=null;try{tabStore=tabStore||openTabStore();if(!tabStore)throw Error();saved=tabStore.load();}catch{tabStore=null;showAccessState('unavailable');$('#message').textContent='This browser could not read tab storage. Continue with Google; refresh may require sign-in.';return false;}
+ if(!saved){showAccessState(tabStore.state);$('#message').textContent=tabStore.state==='expired'?'Saved access expired. Continue with Google to sign in.':tabStore.state==='invalid'?'Saved access was invalid and was removed. Continue with Google.':'No saved access in this tab. Continue with Google. Reopening a link may use a new tab or app browser.';return false;}await loadTabSession(saved);return true;
 }
-function checkTabExpiry(){if(activeSession&&Date.now()>=activeSession.expiresAt)endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:activeSession.issuedAt});}
+function checkTabExpiry(){if(activeSession&&Date.now()>=activeSession.expiresAt)endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:activeSession.issuedAt,state:'expired'});}
 async function connect(){
- const bootGeneration=generation;
+ const bootGeneration=generation,connection=++connectionVersion,current=()=>connection===connectionVersion&&!pageSuspended;
  try{
-  const config=await loadDashboardConfig();if(bootGeneration!==generation)return;if(!config.configured){forgetTabAccess();clearView('Google sign-in is awaiting setup. No private data has been loaded.');return;}authConfig=config;
-  try{tabStore=createTabSessionStore(window.sessionStorage,config.clientId,()=>Date.now());}catch{tabStore=null;}setupLogoutChannel();
-  await restoreTabSession();if(pageSuspended)return;
+  const config=await loadDashboardConfig();if(bootGeneration!==generation||!current())return;if(!config.configured){forgetTabAccess();clearView('Google sign-in is awaiting setup. No private data has been loaded.');return;}authConfig=config;
+  tabStore=openTabStore();setupLogoutChannel();
+  await restoreTabSession();if(!current())return;
   // Restoring an existing token does not depend on loading a new Google sign-in popup.
   try{await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.onload=resolve;script.onerror=reject;document.head.append(script);});}
-  catch{if($('#workspace').hidden)$('#message').textContent='Google sign-in is unavailable. Retry saved access if available, or try again later.';return;}
-  if(pageSuspended)return;
+  catch{if(current()&&$('#workspace').hidden)$('#message').textContent='Google sign-in is unavailable. Retry saved access if available, or try again later.';return;}
+  if(!current())return;
   const client=google.accounts.oauth2.initTokenClient({client_id:config.clientId,scope:'openid email https://www.googleapis.com/auth/spreadsheets.readonly',include_granted_scopes:false,callback:async tokenResponse=>{
    if(authorizationGeneration!==generation){tokenResponse.access_token='';return;}authorizationGeneration=null;
    if(tokenResponse.error||!tokenResponse.access_token){tokenResponse.access_token='';endSession('Google sign-in was not completed.');return;}
    const record=issueTabSession(config.clientId,tokenResponse.access_token,tokenResponse.expires_in,Date.now());tokenResponse.access_token='';
    if(!record){endSession('Google access expires too soon. Continue with Google to retry.');return;}await loadTabSession(record,{save:true});
   },error_callback:()=>{if(authorizationGeneration===generation)endSession('Google sign-in was cancelled or blocked. Try again.');}});
-  $('#signin').disabled=false;$('#switch-account').disabled=false;if($('#workspace').hidden&&$('#retry-session').hidden)$('#message').textContent=SIGNIN_MESSAGE;
+  $('#signin').disabled=false;$('#switch-account').disabled=false;if($('#workspace').hidden&&$('#retry-session').hidden&&$('#message').textContent==='Checking tab access…')$('#message').textContent=SIGNIN_MESSAGE;
   $('#signin').onclick=()=>{endSession('Opening Google…');authorizationGeneration=generation;client.requestAccessToken({prompt:''});};
   $('#switch-account').onclick=()=>{endSession('Choose a Google account…',{broadcast:true});authorizationGeneration=generation;client.requestAccessToken({prompt:'select_account'});};signInReady=true;
- }catch{clearView('Sign-in setup is unavailable. No private data has been loaded.');}
+ }catch{if(current())clearView('Sign-in setup is unavailable. No private data has been loaded.');}
 }
 $('#logout').onclick=()=>endSession(undefined,{broadcast:true});$('#retry-session').onclick=()=>{checkTabExpiry();if(!activeSession)return;return restoreTabSession();};$('#overview').onclick=()=>{category='';render();};$('#project').onchange=render;$('#status').onchange=render;$('#areas').onclick=event=>{const button=event.target.closest('[data-area]');if(button){category=button.dataset.area;render();}};
 for(const name of ['main','feed','ideas'])$('#nav-'+name).onclick=()=>showView(name,true);
@@ -198,8 +214,8 @@ $('#ideas-grid').onclick=event=>{const load=event.target.closest('[data-load-ima
 $('#ideas-undo').onclick=()=>{if(!removedIdeas.length)return;try{if(persistIdeas(addIdea(ideas,removedIdeas[removedIdeas.length-1]),'Reference restored.')){removedIdeas.pop();$('#ideas-undo').hidden=!removedIdeas.length;}}catch(error){$('#ideas-message').textContent=error.message;}};
 $('#ideas-grid').addEventListener?.('error',event=>{if(event.target.tagName!=='IMG')return;event.target.hidden=true;if(event.target.dataset?.ideaImage)failedPreviewIDs.add(event.target.dataset.ideaImage);const fallback=event.target.closest('.idea-visual')?.querySelector('.image-fallback');if(fallback)fallback.hidden=false;},true);
 $('#ideas-export').onclick=()=>{if(!ideas.length)return;const url=URL.createObjectURL(new Blob([serializeIdeas(ideas)],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download='work-life-ideas-'+new Date().toISOString().slice(0,10)+'.json';link.click();URL.revokeObjectURL(url);$('#ideas-message').textContent='Ideas exported. This unencrypted file contains your saved reference URLs and notes; keep it private.';};
-window.addEventListener('pagehide',()=>{pageSuspended=true;clearView();});
+window.addEventListener('pagehide',()=>{pageSuspended=true;connectionVersion++;clearView();});
 window.addEventListener('pageshow',()=>{if(!pageSuspended)return;pageSuspended=false;if(authConfig&&signInReady)restoreTabSession();else connect();});
 document.addEventListener?.('visibilitychange',checkTabExpiry);window.addEventListener('focus',checkTabExpiry);
-clearView('Checking tab access…');connect();
+clearView('Checking tab access…');showAccessState('checking');connect();
 window.addEventListener('hashchange',()=>{if(!$('#workspace').hidden)showView(routeView());});

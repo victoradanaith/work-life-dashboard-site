@@ -137,9 +137,11 @@ export function issueTabSession(clientId,accessToken,lifetimeSeconds,now=Date.no
  return validateTabSession({version:1,clientId,accessToken,issuedAt:now,expiresAt:Math.floor(now+Math.min(lifetime*1000,AUTH_SESSION_MAX_MS)-AUTH_SESSION_MARGIN_MS)},clientId,now);
 }
 export function createTabSessionStore(storage,clientId,clock=()=>Date.now()){
+ let state='checking';
  return {
-  load(){const raw=storage.getItem(AUTH_SESSION_KEY);if(!raw)return null;let record=null;try{if(raw.length<=16384)record=validateTabSession(JSON.parse(raw),clientId,clock());}catch{}if(!record)storage.removeItem(AUTH_SESSION_KEY);return record;},
-  save(input){const record=validateTabSession(input,clientId,clock());if(!record)throw Error('Tab access is invalid or expired.');storage.setItem(AUTH_SESSION_KEY,JSON.stringify(record));},
-  clear(){storage.removeItem(AUTH_SESSION_KEY);}
+  get state(){return state;},
+  load(){const raw=storage.getItem(AUTH_SESSION_KEY);if(!raw){state='missing';return null;}let record=null,candidate=null;const now=clock();try{if(raw.length<=16384){candidate=JSON.parse(raw);record=validateTabSession(candidate,clientId,now);}}catch{}if(!record){state=candidate?.expiresAt<=now&&validateTabSession(candidate,clientId,candidate.issuedAt)?'expired':'invalid';storage.removeItem(AUTH_SESSION_KEY);}else state='restored';return record;},
+  save(input){const record=validateTabSession(input,clientId,clock());if(!record)throw Error('Tab access is invalid or expired.');const raw=JSON.stringify(record);storage.setItem(AUTH_SESSION_KEY,raw);if(storage.getItem(AUTH_SESSION_KEY)!==raw){storage.removeItem(AUTH_SESSION_KEY);throw Error('Tab storage could not retain access.');}state='saved';},
+  clear(){storage.removeItem(AUTH_SESSION_KEY);state='signed-out';}
  };
 }
