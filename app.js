@@ -1,12 +1,12 @@
-import {AREAS,parseSnapshot,selectTasks,totals,projectProgress,upcomingDeadlines,createFeedWindow,parseSharedIdeas,buildFeed,filterFeed,projectTone,addIdea,createIdeaStore,serializeIdeas} from './secure-model.js';
-import {readOMResearch} from './browser-sheets.js';
+import {AREAS,parseSnapshot,selectTasks,totals,projectProgress,upcomingDeadlines,createFeedWindow,parseSharedIdeas,buildFeed,filterFeed,projectTone,addIdea,createIdeaStore,serializeIdeas} from './secure-model.js?v=11356ec1aaef';
+import {readOMResearch} from './browser-sheets.js?v=775f73c2049f';
 const $=selector=>document.querySelector(selector),esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const descriptions=['Property management','Social media work','One to Two Coffee','Life beyond work'];
 const drawings=['<path d="M20 70V27L45 12l25 15v43M10 70h70M32 70V52h26v18M30 30h8v10h-8zm22 0h8v10h-8z"/>','<rect x="24" y="8" width="43" height="65" rx="8"/><path d="M38 18h15M40 63h11M14 27l-6 6 6 6m63 0 7 6-7 6m-43-8 8 8 16-19"/>','<path d="M18 33h46v23c0 20-46 20-46 0zm46 3h8c15 0 15 20-8 20M10 76h64M29 23c-10-9 8-10 0-19m15 19c-10-9 8-10 0-19m15 19c-10-9 8-10 0-19"/>','<path d="M45 74V42m0 13C15 56 12 26 18 19c22 0 30 17 27 36zm0-8c-2-22 12-34 31-34 5 20-7 36-31 34zM26 75h39"/>'];
 // Build-time replacement for secure-app.js's DELIVERY_ADAPTER region.
 // The shared UI and session lifecycle stay identical to the local gateway build.
-import {PUBLIC_CONFIG} from './pages-config.js';
-import {readPrivateSheet,SHEET_DENIED_MESSAGE} from './browser-sheets.js';
+import {PUBLIC_CONFIG} from './pages-config.js?v=9cd551abdae2';
+import {readPrivateSheet,SHEET_DENIED_MESSAGE} from './browser-sheets.js?v=775f73c2049f';
 const DENIED_MESSAGE=SHEET_DENIED_MESSAGE;
 const SIGNIN_MESSAGE='Continue with a Google account that can access your private Sheet.';
 async function loadDashboardConfig(){return {configured:Boolean(PUBLIC_CONFIG.clientId&&PUBLIC_CONFIG.spreadsheetId),clientId:PUBLIC_CONFIG.clientId};}
