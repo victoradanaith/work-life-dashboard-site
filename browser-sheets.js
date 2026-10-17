@@ -9,7 +9,7 @@ export async function readPrivateSheet({spreadsheetId,accessToken,signal},fetche
  const response=await fetcher('https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(spreadsheetId)+'/values:batchGet?'+query,{
   method:'GET',headers:{Authorization:'Bearer '+accessToken},cache:'no-store',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal
  });
- if(!response.ok)throw Error([403,404].includes(response.status)?SHEET_DENIED_MESSAGE:'Private data could not be loaded. Sign in again to retry.');
+ if(!response.ok)throw Object.assign(Error([403,404].includes(response.status)?SHEET_DENIED_MESSAGE:'Private data could not be loaded. Sign in again to retry.'),{status:response.status});
  const data=await response.json();
  if(!Array.isArray(data.valueRanges)||data.valueRanges.length!==2)throw Error('Unexpected Sheet response.');
  const [tasks,activity]=data.valueRanges;

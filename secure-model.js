@@ -122,3 +122,24 @@ export function addIdea(items,input){
 export function createIdeaStore(storage){
  return {load(){return parseIdeas(storage.getItem(IDEAS_KEY));},save(items){storage.setItem(IDEAS_KEY,serializeIdeas(items));}};
 }
+
+/** Approved, short-lived tab credential. No rows or renewal credentials belong here. */
+export const AUTH_SESSION_KEY='worklife.auth.session.v1',AUTH_SESSION_MAX_MS=3600000,AUTH_SESSION_MARGIN_MS=60000;
+export function validateTabSession(record,clientId,now=Date.now()){
+ if(!record||typeof record!=='object'||Array.isArray(record)||Object.keys(record).sort().join(',')!=='accessToken,clientId,expiresAt,issuedAt,version')return null;
+ const {version,accessToken,issuedAt,expiresAt}=record;
+ if(version!==1||record.clientId!==clientId||typeof clientId!=='string'||!clientId||clientId.length>200||typeof accessToken!=='string'||accessToken.length>8192||!/^[A-Za-z0-9._~+\/-]+={0,2}$/.test(accessToken))return null;
+ if(!Number.isSafeInteger(issuedAt)||!Number.isSafeInteger(expiresAt)||issuedAt>now||expiresAt<=now||expiresAt<=issuedAt||expiresAt-issuedAt>AUTH_SESSION_MAX_MS-AUTH_SESSION_MARGIN_MS)return null;
+ return {version:1,clientId,accessToken,issuedAt,expiresAt};
+}
+export function issueTabSession(clientId,accessToken,lifetimeSeconds,now=Date.now()){
+ const lifetime=Number(lifetimeSeconds);if(!Number.isFinite(lifetime)||lifetime<=0)return null;
+ return validateTabSession({version:1,clientId,accessToken,issuedAt:now,expiresAt:Math.floor(now+Math.min(lifetime*1000,AUTH_SESSION_MAX_MS)-AUTH_SESSION_MARGIN_MS)},clientId,now);
+}
+export function createTabSessionStore(storage,clientId,clock=()=>Date.now()){
+ return {
+  load(){const raw=storage.getItem(AUTH_SESSION_KEY);if(!raw)return null;let record=null;try{if(raw.length<=16384)record=validateTabSession(JSON.parse(raw),clientId,clock());}catch{}if(!record)storage.removeItem(AUTH_SESSION_KEY);return record;},
+  save(input){const record=validateTabSession(input,clientId,clock());if(!record)throw Error('Tab access is invalid or expired.');storage.setItem(AUTH_SESSION_KEY,JSON.stringify(record));},
+  clear(){storage.removeItem(AUTH_SESSION_KEY);}
+ };
+}

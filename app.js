@@ -1,22 +1,23 @@
-import {AREAS,parseSnapshot,selectTasks,totals,projectProgress,upcomingDeadlines,createFeedWindow,parseSharedIdeas,buildFeed,filterFeed,projectTone,addIdea,createIdeaStore,serializeIdeas} from './secure-model.js?v=11356ec1aaef';
-import {readOMResearch} from './browser-sheets.js?v=775f73c2049f';
+import {AUTH_SESSION_KEY,issueTabSession,validateTabSession,createTabSessionStore,AREAS,parseSnapshot,selectTasks,totals,projectProgress,upcomingDeadlines,createFeedWindow,parseSharedIdeas,buildFeed,filterFeed,projectTone,addIdea,createIdeaStore,serializeIdeas} from './secure-model.js?v=9a223c820c25';
+import {readOMResearch} from './browser-sheets.js?v=d9c3fdae4012';
 const $=selector=>document.querySelector(selector),esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const descriptions=['Property management','Social media work','One to Two Coffee','Life beyond work'];
 const drawings=['<path d="M20 70V27L45 12l25 15v43M10 70h70M32 70V52h26v18M30 30h8v10h-8zm22 0h8v10h-8z"/>','<rect x="24" y="8" width="43" height="65" rx="8"/><path d="M38 18h15M40 63h11M14 27l-6 6 6 6m63 0 7 6-7 6m-43-8 8 8 16-19"/>','<path d="M18 33h46v23c0 20-46 20-46 0zm46 3h8c15 0 15 20-8 20M10 76h64M29 23c-10-9 8-10 0-19m15 19c-10-9 8-10 0-19m15 19c-10-9 8-10 0-19"/>','<path d="M45 74V42m0 13C15 56 12 26 18 19c22 0 30 17 27 36zm0-8c-2-22 12-34 31-34 5 20-7 36-31 34zM26 75h39"/>'];
 // Build-time replacement for secure-app.js's DELIVERY_ADAPTER region.
 // The shared UI and session lifecycle stay identical to the local gateway build.
 import {PUBLIC_CONFIG} from './pages-config.js?v=9cd551abdae2';
-import {readPrivateSheet,SHEET_DENIED_MESSAGE} from './browser-sheets.js?v=775f73c2049f';
+import {readPrivateSheet,SHEET_DENIED_MESSAGE} from './browser-sheets.js?v=d9c3fdae4012';
 const DENIED_MESSAGE=SHEET_DENIED_MESSAGE;
 const SIGNIN_MESSAGE='Continue with a Google account that can access your private Sheet.';
 async function loadDashboardConfig(){return {configured:Boolean(PUBLIC_CONFIG.clientId&&PUBLIC_CONFIG.spreadsheetId),clientId:PUBLIC_CONFIG.clientId};}
 async function readDashboardData(token,signal){return readPrivateSheet({spreadsheetId:PUBLIC_CONFIG.spreadsheetId,accessToken:token,signal});}
 
 let snapshot={tasks:[],logs:[]},category='',generation=0,expiry,pendingRequest;
+let authConfig=null,tabStore=null,activeSession=null,logoutChannel=null,pageSuspended=false,signInReady=false,authorizationGeneration=null;
 let activeView='main',feedRecords=[],feedWindow=null,feedSelection=[],feedSavedScroll=0,feedSavedAnchor=null,feedRestoreAnchor=null,feedInitialized=false,attentionOnly=false,sharedIdeas=[],sharedIdeasNotice='',ideas=[],ideasStore=null,ideasNotice='',removedIdeas=[];
 const previewIDs=new Set(),failedPreviewIDs=new Set(),feedNodes=new Map(),expandedActivity=new Set();let feedFrame=0,feedObserver=null;
 const feedLayout=Boolean(window.requestAnimationFrame&&document.createElement('article').getBoundingClientRect);
-function clear(message='Signed out. Sign in to continue.'){
+function clearView(message='Signed out. Continue with Google to sign in.'){
  stopFeed();feedWindow=null;feedNodes.clear();expandedActivity.clear();feedInitialized=false;feedSavedScroll=0;feedSavedAnchor=null;feedRestoreAnchor=null;generation++;clearTimeout(expiry);pendingRequest?.abort();pendingRequest=null;snapshot={tasks:[],logs:[]};category='';
  for(const id of ['cards','areas','metrics','deadlines','projects','activity-list','feed-cards','feed-attention-list','ideas-grid','idea-project-options'])$('#'+id).replaceChildren();
  for(const id of ['freshness','count','log-count','feed-freshness','feed-position','feed-cycle-note','ideas-message','ideas-count','ideas-shared-status'])$('#'+id).textContent='';
@@ -24,7 +25,7 @@ function clear(message='Signed out. Sign in to continue.'){
  for(const name of ['main','feed','ideas']){$('#'+name+'-view').hidden=name!=='main';$('#nav-'+name).setAttribute?.('aria-current',name==='main'?'page':'false');}
  for(const id of ['idea-title','idea-url','idea-project','idea-image-url','idea-notes','feed-area','feed-project','feed-status','ideas-project-filter','ideas-source-filter','ideas-area-filter','ideas-library-filter'])$('#'+id).value='';
  for(const [id,label] of [['feed-area','All areas'],['feed-project','All projects'],['feed-status','All statuses'],['ideas-project-filter','All projects'],['ideas-source-filter','All sources']])$('#'+id).innerHTML=`<option value="">${label}</option>`;
- document.title='Work & Life · Sign in';ideasNotice='';
+ document.title='Work & Life · Sign in';ideasNotice='';activeSession=null;$('#session-state').textContent='';$('#session-state').setAttribute?.('data-expires-at','');$('#retry-session').hidden=true;
  $('#project').innerHTML='<option value="">All projects</option>';$('#status').innerHTML='<option value="">All statuses</option>';$('#status').value='';$('#workspace').hidden=true;$('#logout').hidden=true;$('#gate').hidden=false;$('#message').textContent=message;
 }
 function setOptions(id,values,label){
@@ -109,28 +110,81 @@ function render(){
  const taskIDs=new Set(scoped.map(task=>task.id)),logs=snapshot.logs.filter(log=>!category||taskIDs.has(log.taskID));$('#log-count').textContent=`${logs.length} entries · Bangkok source dates`;
  $('#activity-list').innerHTML=logs.slice().reverse().map(log=>`<article class="activity-entry"><small>${esc(log.date)} · ${esc(log.taskID)}${log.status?` · ${esc(log.status)}`:''}</small><p>${esc(log.description)}</p>${log.hours?`<p>Hours · ${esc(log.hours)}</p>`:''}${log.link?`<a href="${esc(log.link)}" target="_blank" rel="noopener noreferrer">Result link ↗</a>`:''}</article>`).join('')||'<p class="empty">No activity entries in this area.</p>';
 }
-async function connect(){
+function forgetTabAccess(){
+ try{if(tabStore)tabStore.clear();else window.sessionStorage?.removeItem(AUTH_SESSION_KEY);return true;}catch{return false;}
+}
+function endSession(message='Signed out. Continue with Google to sign in.',{broadcast=false,issuedAt=null}={}){
+ authorizationGeneration=null;const removed=forgetTabAccess();clearView(message+(removed?'':' This browser blocked clearing tab storage; close this tab or clear site data.'));
+ if(broadcast)try{logoutChannel?.postMessage({type:'logout',clientId:authConfig?.clientId,issuedAt});}catch{}
+}
+function setupLogoutChannel(){
+ if(logoutChannel||!window.BroadcastChannel)return;
+ try{logoutChannel=new window.BroadcastChannel('worklife.auth.session.v1');logoutChannel.onmessage=event=>{
+  const data=event.data;if(!data||data.type!=='logout'||data.clientId!==authConfig?.clientId)return;
+  if(data.issuedAt!==null&&!Number.isSafeInteger(data.issuedAt))return;
+  if(data.issuedAt!==null){let saved=null;try{saved=tabStore?.load();}catch{}const matches=activeSession?.issuedAt===data.issuedAt||saved?.issuedAt===data.issuedAt;if(saved)saved.accessToken='';if(!matches)return;}
+  endSession('Signed out in another dashboard tab. Continue with Google to sign in.');
+ };}catch{logoutChannel=null;}
+}
+function armTabDeadline(record,remembered){
+ activeSession={issuedAt:record.issuedAt,expiresAt:record.expiresAt,remembered};
+ const remaining=record.expiresAt-Date.now();if(remaining<=0){endSession('Session expired. Continue with Google to sign in.');return false;}
+ expiry=setTimeout(()=>endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:record.issuedAt}),remaining);return true;
+}
+function showTabDeadline(){
+ if(!activeSession)return;const until=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Bangkok',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(activeSession.expiresAt));
+ $('#session-state').textContent='Access until '+until+' Bangkok · '+(activeSession.remembered?'Refresh stays signed in in this tab.':'Tab storage is unavailable; refreshing will require sign-in.');$('#session-state').setAttribute?.('data-expires-at',String(activeSession.expiresAt));
+}
+async function loadTabSession(record,{save=false}={}){
+ clearView(save?'Verifying private access…':'Restoring private access in this tab…');const requestGeneration=generation;
+ if(!validateTabSession(record,authConfig.clientId,Date.now())){record.accessToken='';endSession('Session expired or unavailable. Continue with Google to sign in.');return;}
+ let remembered=!save;if(!armTabDeadline(record,remembered)){record.accessToken='';return;}pendingRequest=new AbortController();$('#logout').hidden=false;
  try{
-  const config=await loadDashboardConfig();if(!config.configured){clear('Google sign-in is awaiting setup. No private data has been loaded.');return;}
-  await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.onload=resolve;script.onerror=reject;document.head.append(script);});
-  const client=google.accounts.oauth2.initTokenClient({client_id:config.clientId,scope:'openid email https://www.googleapis.com/auth/spreadsheets.readonly',include_granted_scopes:false,callback:async tokenResponse=>{
-   if(tokenResponse.error||!tokenResponse.access_token){tokenResponse.access_token='';clear('Google sign-in was not completed.');return;}
-   clear('Verifying access…');const requestGeneration=generation,lifetime=Number(tokenResponse.expires_in);
-   if(!(lifetime>0)){tokenResponse.access_token='';clear('Session expired. Sign in again.');return;}
-   expiry=setTimeout(()=>clear('Session expired. Sign in again.'),Math.min(lifetime*1000,3600000));pendingRequest=new AbortController();$('#logout').hidden=false;
-   try{
-    const [data,research]=await Promise.all([readDashboardData(tokenResponse.access_token,pendingRequest.signal),readOMResearch({accessToken:tokenResponse.access_token,signal:pendingRequest.signal}).then(parseSharedIdeas).then(items=>({items}),error=>({error:error.message}))]);if(requestGeneration!==generation)return;snapshot=parseSnapshot(data);sharedIdeas=research.items||[];sharedIdeasNotice=research.error||`${sharedIdeas.length} references read from private OM research · Read only · Refresh by signing in again.`;
+  const [data,research]=await Promise.all([readDashboardData(record.accessToken,pendingRequest.signal),readOMResearch({accessToken:record.accessToken,signal:pendingRequest.signal}).then(parseSharedIdeas).then(items=>({items}),()=>({error:'OM research could not be loaded. Ask the Sheet owner for access if needed, or refresh to retry.'}))]);
+  if(requestGeneration!==generation)return;if(!validateTabSession(record,authConfig.clientId,Date.now())){endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:record.issuedAt});return;}
+  snapshot=parseSnapshot(data);sharedIdeas=research.items||[];sharedIdeasNotice=research.error||`${sharedIdeas.length} references read from private OM research · Read only · Refresh to check for updates.`;
+  // Save only after Google accepted the central read and its data was validated.
+  if(save){try{if(tabStore){tabStore.save(record);remembered=true;}}catch{forgetTabAccess();}}
+  if(activeSession)activeSession.remembered=remembered;
     $('#project').innerHTML='<option value="">All projects</option>'+[...new Set(snapshot.tasks.map(task=>task.project).filter(Boolean))].sort().map(project=>`<option>${esc(project)}</option>`).join('');
     $('#status').innerHTML='<option value="">All statuses</option>'+[...new Set(snapshot.tasks.map(task=>task.status))].sort().map(status=>`<option>${esc(status)}</option>`).join('');
     $('#freshness').textContent='Read from your private Sheet · '+new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Bangkok',dateStyle:'medium',timeStyle:'short'}).format(new Date(data.readAt))+' Bangkok';
     $('#gate').hidden=true;$('#workspace').hidden=false;$('#logout').hidden=false;render();prepareViews();
-   }catch(error){if(requestGeneration===generation)clear(error.message===DENIED_MESSAGE?error.message:'Private data could not be loaded. Sign in again to retry.');}
-   finally{tokenResponse.access_token='';if(requestGeneration===generation)pendingRequest=null;}
-  },error_callback:()=>clear('Google sign-in was cancelled or blocked. Try again.')});
-  $('#signin').disabled=false;$('#switch-account').disabled=false;$('#message').textContent=SIGNIN_MESSAGE;$('#signin').onclick=()=>client.requestAccessToken({prompt:''});$('#switch-account').onclick=()=>client.requestAccessToken({prompt:'select_account'});
- }catch{clear('Sign-in service is unavailable. No private data has been loaded.');}
+  showTabDeadline();
+ }catch(error){
+  if(requestGeneration!==generation)return;
+  if([401,403,404].includes(error.status)||error.message===DENIED_MESSAGE){endSession(error.message===DENIED_MESSAGE?DENIED_MESSAGE:'Google denied private access. Continue with an authorized account.',{broadcast:true,issuedAt:record.issuedAt});}
+  else if(record.expiresAt<=Date.now()){endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:record.issuedAt});}
+  else{clearView('Private Sheets could not be loaded. '+(remembered?'Retry loading with this tab’s saved access.':'Continue with Google to retry.'));if(remembered&&armTabDeadline(record,true)){$('#retry-session').hidden=false;$('#logout').hidden=false;}}
+ }finally{record.accessToken='';if(requestGeneration===generation)pendingRequest=null;}
 }
-$('#logout').onclick=()=>clear();$('#overview').onclick=()=>{category='';render();};$('#project').onchange=render;$('#status').onchange=render;$('#areas').onclick=event=>{const button=event.target.closest('[data-area]');if(button){category=button.dataset.area;render();}};
+async function restoreTabSession(){
+ let saved=null;try{saved=tabStore?.load();}catch{tabStore=null;}
+ if(!saved)return false;await loadTabSession(saved);return true;
+}
+function checkTabExpiry(){if(activeSession&&Date.now()>=activeSession.expiresAt)endSession('Session expired. Continue with Google to sign in.',{broadcast:true,issuedAt:activeSession.issuedAt});}
+async function connect(){
+ const bootGeneration=generation;
+ try{
+  const config=await loadDashboardConfig();if(bootGeneration!==generation)return;if(!config.configured){forgetTabAccess();clearView('Google sign-in is awaiting setup. No private data has been loaded.');return;}authConfig=config;
+  try{tabStore=createTabSessionStore(window.sessionStorage,config.clientId,()=>Date.now());}catch{tabStore=null;}setupLogoutChannel();
+  await restoreTabSession();if(pageSuspended)return;
+  // Restoring an existing token does not depend on loading a new Google sign-in popup.
+  try{await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.onload=resolve;script.onerror=reject;document.head.append(script);});}
+  catch{if($('#workspace').hidden)$('#message').textContent='Google sign-in is unavailable. Retry saved access if available, or try again later.';return;}
+  if(pageSuspended)return;
+  const client=google.accounts.oauth2.initTokenClient({client_id:config.clientId,scope:'openid email https://www.googleapis.com/auth/spreadsheets.readonly',include_granted_scopes:false,callback:async tokenResponse=>{
+   if(authorizationGeneration!==generation){tokenResponse.access_token='';return;}authorizationGeneration=null;
+   if(tokenResponse.error||!tokenResponse.access_token){tokenResponse.access_token='';endSession('Google sign-in was not completed.');return;}
+   const record=issueTabSession(config.clientId,tokenResponse.access_token,tokenResponse.expires_in,Date.now());tokenResponse.access_token='';
+   if(!record){endSession('Google access expires too soon. Continue with Google to retry.');return;}await loadTabSession(record,{save:true});
+  },error_callback:()=>{if(authorizationGeneration===generation)endSession('Google sign-in was cancelled or blocked. Try again.');}});
+  $('#signin').disabled=false;$('#switch-account').disabled=false;if($('#workspace').hidden&&$('#retry-session').hidden)$('#message').textContent=SIGNIN_MESSAGE;
+  $('#signin').onclick=()=>{endSession('Opening Google…');authorizationGeneration=generation;client.requestAccessToken({prompt:''});};
+  $('#switch-account').onclick=()=>{endSession('Choose a Google account…',{broadcast:true});authorizationGeneration=generation;client.requestAccessToken({prompt:'select_account'});};signInReady=true;
+ }catch{clearView('Sign-in setup is unavailable. No private data has been loaded.');}
+}
+$('#logout').onclick=()=>endSession(undefined,{broadcast:true});$('#retry-session').onclick=()=>{checkTabExpiry();if(!activeSession)return;return restoreTabSession();};$('#overview').onclick=()=>{category='';render();};$('#project').onchange=render;$('#status').onchange=render;$('#areas').onclick=event=>{const button=event.target.closest('[data-area]');if(button){category=button.dataset.area;render();}};
 for(const name of ['main','feed','ideas'])$('#nav-'+name).onclick=()=>showView(name,true);
 function resetFeed(){feedSavedScroll=0;feedSavedAnchor=null;feedRestoreAnchor=null;renderFeed();}
 for(const id of ['feed-area','feed-project','feed-status'])$('#'+id).onchange=resetFeed;
@@ -144,5 +198,8 @@ $('#ideas-grid').onclick=event=>{const load=event.target.closest('[data-load-ima
 $('#ideas-undo').onclick=()=>{if(!removedIdeas.length)return;try{if(persistIdeas(addIdea(ideas,removedIdeas[removedIdeas.length-1]),'Reference restored.')){removedIdeas.pop();$('#ideas-undo').hidden=!removedIdeas.length;}}catch(error){$('#ideas-message').textContent=error.message;}};
 $('#ideas-grid').addEventListener?.('error',event=>{if(event.target.tagName!=='IMG')return;event.target.hidden=true;if(event.target.dataset?.ideaImage)failedPreviewIDs.add(event.target.dataset.ideaImage);const fallback=event.target.closest('.idea-visual')?.querySelector('.image-fallback');if(fallback)fallback.hidden=false;},true);
 $('#ideas-export').onclick=()=>{if(!ideas.length)return;const url=URL.createObjectURL(new Blob([serializeIdeas(ideas)],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download='work-life-ideas-'+new Date().toISOString().slice(0,10)+'.json';link.click();URL.revokeObjectURL(url);$('#ideas-message').textContent='Ideas exported. This unencrypted file contains your saved reference URLs and notes; keep it private.';};
-window.addEventListener('pagehide',()=>clear());clear('Checking sign-in setup…');connect();
+window.addEventListener('pagehide',()=>{pageSuspended=true;clearView();});
+window.addEventListener('pageshow',()=>{if(!pageSuspended)return;pageSuspended=false;if(authConfig&&signInReady)restoreTabSession();else connect();});
+document.addEventListener?.('visibilitychange',checkTabExpiry);window.addEventListener('focus',checkTabExpiry);
+clearView('Checking tab access…');connect();
 window.addEventListener('hashchange',()=>{if(!$('#workspace').hidden)showView(routeView());});
