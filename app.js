@@ -127,7 +127,7 @@ async function connect(){
    }catch(error){if(requestGeneration===generation)clear(error.message===DENIED_MESSAGE?error.message:'Private data could not be loaded. Sign in again to retry.');}
    finally{tokenResponse.access_token='';if(requestGeneration===generation)pendingRequest=null;}
   },error_callback:()=>clear('Google sign-in was cancelled or blocked. Try again.')});
-  $('#signin').disabled=false;$('#message').textContent=SIGNIN_MESSAGE;$('#signin').onclick=()=>client.requestAccessToken({prompt:'select_account'});
+  $('#signin').disabled=false;$('#switch-account').disabled=false;$('#message').textContent=SIGNIN_MESSAGE;$('#signin').onclick=()=>client.requestAccessToken({prompt:''});$('#switch-account').onclick=()=>client.requestAccessToken({prompt:'select_account'});
  }catch{clear('Sign-in service is unavailable. No private data has been loaded.');}
 }
 $('#logout').onclick=()=>clear();$('#overview').onclick=()=>{category='';render();};$('#project').onchange=render;$('#status').onchange=render;$('#areas').onclick=event=>{const button=event.target.closest('[data-area]');if(button){category=button.dataset.area;render();}};
